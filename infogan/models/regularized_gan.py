@@ -26,28 +26,81 @@ class RegularizedGAN(object):
         self.reg_cont_latent_dist = Product([x for x in self.reg_latent_dist.dists if isinstance(x, Gaussian)])
         self.reg_disc_latent_dist = Product([x for x in self.reg_latent_dist.dists if isinstance(x, (Categorical, Bernoulli))])
 
-        image_size = image_shape[0]
-        if network_type == "mnist":
+    def create_discriminator(self, inp):
+        image_size = self.image_shape[0]
+        if self.network_type == "mnist":
             with tf.variable_scope("d_net"):
-                shared_template = \
-                    (pt.template("input").
-                     reshape([-1] + list(image_shape)).
-                     custom_conv2d(64, k_h=4, k_w=4).
-                     apply(leaky_rectify).
-                     custom_conv2d(128, k_h=4, k_w=4).
-                     conv_batch_norm().
-                     apply(leaky_rectify).
-                     custom_fully_connected(1024).
-                     fc_batch_norm().
-                     apply(leaky_rectify))
-                self.discriminator_template = shared_template.custom_fully_connected(1)
-                self.encoder_template = \
-                    (shared_template.
-                     custom_fully_connected(128).
-                     fc_batch_norm().
-                     apply(leaky_rectify).
-                     custom_fully_connected(self.reg_latent_dist.dist_flat_dim))
+                with tf.variable_scope("conv1") as scope:
+                    inp_ = tf.reshape(inp,[-1]+list(self.image_shape))
+                    kernel = tf.get_variable('weight',[4,4,self.image_shape[-1],64], \
+                        initializer = tf.truncated_normal_initializer(5e-2))
+                    conv = tf.nn.conv2d(inp_,kernel,[1,1,1,1], padding='SAME')
+                    bias = tf.get_variable('bias',[64], initializer=tf.constant_initializer(0.1))
+                    pre_act = tf.nn.bias_add(conv,bias)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(pre_act)
+                    # leaky ReLu with alpha = 0.01
+                    conv1 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
 
+                pool1 = tf.nn.max_pool(conv1, ksize=[1,3,3,1], strides=[1,2,2,1], padding='SAME', name='pool1')
+
+                with tf.variable_scope("conv2") as scope:
+                    kernel = tf.get_variable('weight',[4,4,64,128], \
+                        initializer = tf.truncated_normal_initializer(5e-2))
+                    conv = tf.nn.conv2d(pool1,kernel,[1,1,1,1], padding='SAME')
+                    bias = tf.get_variable('bias',[128], initializer=tf.constant_initializer(0.1))
+                    pre_act = tf.nn.bias_add(conv,bias)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(pre_act)
+                    # leaky ReLu with alpha = 0.01
+                    conv2 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
+
+                pool2 = tf.nn.max_pool(conv1, ksize=[1,3,3,1], strides=[1,2,2,1], padding='SAME', name='pool2')
+
+                with tf.variable_scope("fc3") as scope:
+                    inp_ = tf.reshape(pool2, [self.batch_size, -1])
+                    dim = inp.get_shape()[1].value
+                    weights = tf.get_variable('weight',[dim,1024],\
+                        initializer=tf.truncated_normal_initializer(4e-3))
+                    bias = tf.get_variable('bias',[1024],initializer=tf.constant_initializer(0.1))
+                    pre_act = tf.matmul(inp_,weights) + bias
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(pre_act)
+                    # leaky ReLu with alpha = 0.01
+                    fc3 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
+
+                with tf.variable_scope("fc4") as scope:
+                    weights = tf.get_variable('weight',[1024,128],\
+                        initializer=tf.truncated_normal_initializer(4e-3))
+                    bias = tf.get_variable('bias',[128],initializer=tf.constant_initializer(0.1))
+                    pre_act = tf.nn.bias_add(tf.matmul(fc3,weights),bias,name=scope.name)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(pre_act)
+                    # leaky ReLu with alpha = 0.01
+                    fc4 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
+
+                with tf.variable_scope("d_temp") as scope:
+                    weights = tf.get_variable('weight',[1024,1],\
+                        initializer=tf.truncated_normal_initializer(4e-3))
+                    bias = tf.get_variable('bias',[1],initializer=tf.constant_initializer(0.1))
+                    d_temp = tf.nn.bias_add(tf.matmul(fc3,weights),bias,name=scope.name)
+                    
+                self.discriminator_template = d_temp
+
+                with tf.variable_scope("enc_temp") as scope:
+                    weights = tf.get_variable('weight',[128,self.reg_latent_dist.dist_flat_dim],\
+                        initializer=tf.truncated_normal_initializer(4e-3))
+                    bias = tf.get_variable('bias',[self.reg_latent_dist.dist_flat_dim],\
+                        initializer=tf.constant_initializer(0.1))
+                    enc_temp = tf.nn.bias_add(tf.matmul(fc4,weights),bias,name=scope.name)
+
+                self.encoder_template = enc_temp
+        else:
+            raise NotImplementedError
+
+    def create_generator(self, inp):
+        image_size = self.image_shape[0]
+        if self.network_type == "mnist":
             with tf.variable_scope("g_net"):
                 self.generator_template = \
                     (pt.template("input").
@@ -61,20 +114,23 @@ class RegularizedGAN(object):
                      custom_deconv2d([0, image_size / 2, image_size / 2, 64], k_h=4, k_w=4).
                      conv_batch_norm().
                      apply(tf.nn.relu).
-                     custom_deconv2d([0] + list(image_shape), k_h=4, k_w=4).
+                     custom_deconv2d([0] + list(self.image_shape), k_h=4, k_w=4).
                      flatten())
         else:
             raise NotImplementedError
 
+
     def discriminate(self, x_var):
+        self.create_discriminator(input=x_var)
         d_out = self.discriminator_template.construct(input=x_var)
         d = tf.nn.sigmoid(d_out[:, 0])
-        reg_dist_flat = self.encoder_template.construct(input=x_var)
+        reg_dist_flat = self.encoder_template
         reg_dist_info = self.reg_latent_dist.activate_dist(reg_dist_flat)
         return d, self.reg_latent_dist.sample(reg_dist_info), reg_dist_info, reg_dist_flat
 
     def generate(self, z_var):
-        x_dist_flat = self.generator_template.construct(input=z_var)
+        self.create_generator(z_var)
+        x_dist_flat = self.generator_template
         x_dist_info = self.output_dist.activate_dist(x_dist_flat)
         return self.output_dist.sample(x_dist_info), x_dist_info
 
