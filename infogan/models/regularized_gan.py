@@ -59,7 +59,7 @@ class RegularizedGAN(object):
 
                 with tf.variable_scope("fc3") as scope:
                     inp_ = tf.reshape(pool2, [self.batch_size, -1])
-                    dim = inp.get_shape()[1].value
+                    dim = inp_.get_shape()[1].value
                     weights = tf.get_variable('weight',[dim,1024],\
                         initializer=tf.truncated_normal_initializer(4e-3))
                     bias = tf.get_variable('bias',[1024],initializer=tf.constant_initializer(0.1))
@@ -102,34 +102,71 @@ class RegularizedGAN(object):
         image_size = self.image_shape[0]
         if self.network_type == "mnist":
             with tf.variable_scope("g_net"):
-                self.generator_template = \
-                    (pt.template("input").
-                     custom_fully_connected(1024).
-                     fc_batch_norm().
-                     apply(tf.nn.relu).
-                     custom_fully_connected(image_size / 4 * image_size / 4 * 128).
-                     fc_batch_norm().
-                     apply(tf.nn.relu).
-                     reshape([-1, image_size / 4, image_size / 4, 128]).
-                     custom_deconv2d([0, image_size / 2, image_size / 2, 64], k_h=4, k_w=4).
-                     conv_batch_norm().
-                     apply(tf.nn.relu).
-                     custom_deconv2d([0] + list(self.image_shape), k_h=4, k_w=4).
-                     flatten())
+                with tf.variable_scope("fc1"):
+                    output_shape = [inp.shape[-1].value,1024]
+                    weights = tf.get_variable('weight', output_shape,\
+                        initializer=truncated_normal_initializer(0.1))
+                    bias = tf.get_variable('bias',[1024],initializer=constant_initializer(0.1))
+                    pre_act = tf.bias_add(tf.matmul(inp,weights),bias)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(pre_act)
+                    # applying activation
+                    fc1 = tf.nn.relu(pre_act, name=scope.name)
+
+                with tf.variable_scope("fc2"):
+                    output_shape = [-1, image_size/4*image_size/4*128]
+                    weights = tf.get_variable('weight',[1024,output_shape[-1]],initializer=truncated_normal_initializer(0.1))
+                    bias = tf.get_variable('bias',[output_shape[-1]],initializer=constant_initializer(0.1))
+                    pre_act = tf.bias_add(tf.matmul(fc1,weights),bias)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(pre_act)
+                    # applying activation
+                    fc2 = tf.nn.relu(pre_act, name=scope.name)
+                    fc2_r = tf.reshape(fc2,[-1, image_size/4, image_size/4, 128])
+
+                with tf.variable_scope("deconv3"):
+                    output_shape = [-1, image_size/2, image_size/2, 64]
+                    kernel = tf.get_variable('weight', [4, 4, 128, 64],\
+                              initializer=tf.random_normal_initializer(stddev=stddev))
+                    deconv = tf.nn.conv2d_transpose(input_layer, kernel,\
+                        output_shape=output_shape,strides=[1, 2, 2, 1])
+
+                    bias = self.variable('bias', [output_shape[-1]], init=tf.constant_initializer(0.0))
+                    deconv = tf.reshape(tf.nn.bias_add(deconv, biases), output_shape)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(deconv)
+                    # applying activation
+                    deconv3 = tf.nn.relu(pre_act, name=scope.name)
+
+                with tf.variable_scope("deconv4"):
+                    output_shape = [-1, image_size, image_size, 1]
+                    kernel = tf.get_variable('weight', [4, 4, 64, 1],\
+                              initializer=tf.random_normal_initializer(stddev=stddev))
+                    deconv = tf.nn.conv2d_transpose(input_layer, kernel,\
+                        output_shape=output_shape,strides=[1, 2, 2, 1])
+
+                    bias = self.variable('bias', [output_shape[-1]], init=tf.constant_initializer(0.0))
+                    deconv = tf.reshape(tf.nn.bias_add(deconv, biases), output_shape)
+                    # applying batch_norm
+                    pre_act = tf.nn.batch_normalization(deconv)
+                    # applying activation
+                    deconv4 = tf.nn.relu(pre_act, name=scope.name)
+
+                self.generator_template = deconv4
         else:
             raise NotImplementedError
 
 
     def discriminate(self, x_var):
-        self.create_discriminator(input=x_var)
-        d_out = self.discriminator_template.construct(input=x_var)
+        self.create_discriminator(inp=x_var)
+        d_out = self.discriminator_template
         d = tf.nn.sigmoid(d_out[:, 0])
         reg_dist_flat = self.encoder_template
         reg_dist_info = self.reg_latent_dist.activate_dist(reg_dist_flat)
         return d, self.reg_latent_dist.sample(reg_dist_info), reg_dist_info, reg_dist_flat
 
     def generate(self, z_var):
-        self.create_generator(z_var)
+        self.create_generator(inp=z_var)
         x_dist_flat = self.generator_template
         x_dist_info = self.output_dist.activate_dist(x_dist_flat)
         return self.output_dist.sample(x_dist_info), x_dist_info
@@ -219,3 +256,5 @@ class RegularizedGAN(object):
                 ret.append(nonreg_dist_infos[nonreg_idx])
                 nonreg_idx += 1
         return self.latent_dist.join_dist_infos(ret)
+
+#Note: Change all the tf.batch_normalization statements to the ones in custom_ops
