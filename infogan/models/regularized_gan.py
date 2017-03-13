@@ -26,6 +26,12 @@ class RegularizedGAN(object):
         self.reg_cont_latent_dist = Product([x for x in self.reg_latent_dist.dists if isinstance(x, Gaussian)])
         self.reg_disc_latent_dist = Product([x for x in self.reg_latent_dist.dists if isinstance(x, (Categorical, Bernoulli))])
 
+    def custom_batch_norm(self, input_layer, epsilon=1e-5):
+        shape = input_layer.shape
+        shp = shape[-1]
+        mean, variance = tf.nn.moments(input_layer, [0])
+        return tf.nn.batch_normalization( input_layer, mean, variance, None, None, epsilon)
+
     def create_discriminator(self, inp):
         image_size = self.image_shape[0]
         if self.network_type == "mnist":
@@ -38,7 +44,7 @@ class RegularizedGAN(object):
                     bias = tf.get_variable('bias',[64], initializer=tf.constant_initializer(0.1))
                     pre_act = tf.nn.bias_add(conv,bias)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(pre_act)
+                    pre_act = self.custom_batch_norm(pre_act)
                     # leaky ReLu with alpha = 0.01
                     conv1 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
 
@@ -51,7 +57,7 @@ class RegularizedGAN(object):
                     bias = tf.get_variable('bias',[128], initializer=tf.constant_initializer(0.1))
                     pre_act = tf.nn.bias_add(conv,bias)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(pre_act)
+                    pre_act = self.custom_batch_norm(pre_act)
                     # leaky ReLu with alpha = 0.01
                     conv2 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
 
@@ -65,7 +71,7 @@ class RegularizedGAN(object):
                     bias = tf.get_variable('bias',[1024],initializer=tf.constant_initializer(0.1))
                     pre_act = tf.matmul(inp_,weights) + bias
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(pre_act)
+                    pre_act = self.custom_batch_norm(pre_act)
                     # leaky ReLu with alpha = 0.01
                     fc3 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
 
@@ -75,7 +81,7 @@ class RegularizedGAN(object):
                     bias = tf.get_variable('bias',[128],initializer=tf.constant_initializer(0.1))
                     pre_act = tf.nn.bias_add(tf.matmul(fc3,weights),bias,name=scope.name)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(pre_act)
+                    pre_act = self.custom_batch_norm(pre_act)
                     # leaky ReLu with alpha = 0.01
                     fc4 = tf.maximum(0.01*pre_act, pre_act, name=scope.name)
 
@@ -102,53 +108,53 @@ class RegularizedGAN(object):
         image_size = self.image_shape[0]
         if self.network_type == "mnist":
             with tf.variable_scope("g_net"):
-                with tf.variable_scope("fc1"):
+                with tf.variable_scope("fc1") as scope:
                     output_shape = [inp.shape[-1].value,1024]
                     weights = tf.get_variable('weight', output_shape,\
-                        initializer=truncated_normal_initializer(0.1))
-                    bias = tf.get_variable('bias',[1024],initializer=constant_initializer(0.1))
-                    pre_act = tf.bias_add(tf.matmul(inp,weights),bias)
+                        initializer=tf.truncated_normal_initializer(0.1))
+                    bias = tf.get_variable('bias',[1024],initializer=tf.constant_initializer(0.1))
+                    pre_act = tf.nn.bias_add(tf.matmul(inp,weights),bias)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(pre_act)
+                    pre_act = self.custom_batch_norm(pre_act)
                     # applying activation
                     fc1 = tf.nn.relu(pre_act, name=scope.name)
 
-                with tf.variable_scope("fc2"):
+                with tf.variable_scope("fc2") as scope:
                     output_shape = [-1, image_size/4*image_size/4*128]
-                    weights = tf.get_variable('weight',[1024,output_shape[-1]],initializer=truncated_normal_initializer(0.1))
-                    bias = tf.get_variable('bias',[output_shape[-1]],initializer=constant_initializer(0.1))
-                    pre_act = tf.bias_add(tf.matmul(fc1,weights),bias)
+                    weights = tf.get_variable('weight',[1024,output_shape[-1]],initializer=tf.truncated_normal_initializer(0.1))
+                    bias = tf.get_variable('bias',[output_shape[-1]],initializer=tf.constant_initializer(0.1))
+                    pre_act = tf.nn.bias_add(tf.matmul(fc1,weights),bias)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(pre_act)
+                    pre_act = self.custom_batch_norm(pre_act)
                     # applying activation
                     fc2 = tf.nn.relu(pre_act, name=scope.name)
                     fc2_r = tf.reshape(fc2,[-1, image_size/4, image_size/4, 128])
 
-                with tf.variable_scope("deconv3"):
+                with tf.variable_scope("deconv3") as scope:
                     output_shape = [-1, image_size/2, image_size/2, 64]
-                    kernel = tf.get_variable('weight', [4, 4, 128, 64],\
-                              initializer=tf.random_normal_initializer(stddev=stddev))
-                    deconv = tf.nn.conv2d_transpose(input_layer, kernel,\
+                    kernel = tf.get_variable('weight', [4, 4, 64, 128],\
+                              initializer=tf.random_normal_initializer(stddev=0.02))
+                    deconv = tf.nn.conv2d_transpose(fc2_r, kernel,\
                         output_shape=output_shape,strides=[1, 2, 2, 1])
 
-                    bias = self.variable('bias', [output_shape[-1]], init=tf.constant_initializer(0.0))
-                    deconv = tf.reshape(tf.nn.bias_add(deconv, biases), output_shape)
+                    bias = tf.get_variable('bias', [output_shape[-1]], initializer=tf.constant_initializer(0.0))
+                    deconv = tf.reshape(tf.nn.bias_add(deconv, bias), output_shape)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(deconv)
+                    pre_act = self.custom_batch_norm(deconv)
                     # applying activation
                     deconv3 = tf.nn.relu(pre_act, name=scope.name)
 
-                with tf.variable_scope("deconv4"):
+                with tf.variable_scope("deconv4") as scope:
                     output_shape = [-1, image_size, image_size, 1]
-                    kernel = tf.get_variable('weight', [4, 4, 64, 1],\
-                              initializer=tf.random_normal_initializer(stddev=stddev))
-                    deconv = tf.nn.conv2d_transpose(input_layer, kernel,\
+                    kernel = tf.get_variable('weight', [4, 4, 1, 64],\
+                              initializer=tf.random_normal_initializer(stddev=0.02))
+                    deconv = tf.nn.conv2d_transpose(deconv3, kernel,\
                         output_shape=output_shape,strides=[1, 2, 2, 1])
 
-                    bias = self.variable('bias', [output_shape[-1]], init=tf.constant_initializer(0.0))
-                    deconv = tf.reshape(tf.nn.bias_add(deconv, biases), output_shape)
+                    bias = tf.get_variable('bias', [output_shape[-1]], initializer=tf.constant_initializer(0.0))
+                    deconv = tf.reshape(tf.nn.bias_add(deconv, bias), output_shape)
                     # applying batch_norm
-                    pre_act = tf.nn.batch_normalization(deconv)
+                    pre_act = self.custom_batch_norm(deconv)
                     # applying activation
                     deconv4 = tf.nn.relu(pre_act, name=scope.name)
 
