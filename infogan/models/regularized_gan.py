@@ -1,5 +1,4 @@
 from infogan.misc.distributions import Product, Distribution, Gaussian, Categorical, Bernoulli
-import prettytensor as pt
 import tensorflow as tf
 import infogan.misc.custom_ops
 from infogan.misc.custom_ops import leaky_rectify
