@@ -7,7 +7,7 @@ from infogan.misc.distributions import Bernoulli, Gaussian, Categorical
 import sys
 
 TINY = 1e-8
-
+REUSE = False
 
 class InfoGANTrainer(object):
     def __init__(self,
@@ -49,9 +49,13 @@ class InfoGANTrainer(object):
 
         with pt.defaults_scope(phase=pt.Phase.train):
             z_var = self.model.latent_dist.sample_prior(self.batch_size)
-            fake_x, _ = self.model.generate(z_var)
-            real_d, _, _, _ = self.model.discriminate(input_tensor)
-            fake_d, _, fake_reg_z_dist_info, _ = self.model.discriminate(fake_x)
+            with tf.variable_scope("generate") as scope:
+                fake_x, _ = self.model.generate(z_var)
+            
+            with tf.variable_scope("discriminate") as scope:
+                real_d, _, _, _ = self.model.discriminate(input_tensor)
+                scope.reuse_variables()
+                fake_d, _, fake_reg_z_dist_info, _ = self.model.discriminate(fake_x)
 
             reg_z = self.model.reg_z(z_var)
 
@@ -105,8 +109,8 @@ class InfoGANTrainer(object):
             self.log_vars.append(("CrossEnt", cross_ent))
 
             all_vars = tf.trainable_variables()
-            d_vars = [var for var in all_vars if var.name.startswith('d_')]
-            g_vars = [var for var in all_vars if var.name.startswith('g_')]
+            d_vars = [var for var in all_vars if var.name.startswith('discriminate/d_')]
+            g_vars = [var for var in all_vars if var.name.startswith('generate/g_')]
 
             self.log_vars.append(("max_real_d", tf.reduce_max(real_d)))
             self.log_vars.append(("min_real_d", tf.reduce_min(real_d)))
@@ -124,7 +128,7 @@ class InfoGANTrainer(object):
                 tf.summary.scalar(k, v)
 
         with pt.defaults_scope(phase=pt.Phase.test):
-            with tf.variable_scope("model", reuse=True) as scope:
+            with tf.variable_scope("generate", reuse=True) as scope:
                 self.visualize_all_factors()
 
     def visualize_all_factors(self):
