@@ -5,3 +5,6 @@ imgs
 logs
 ckt
 .ipynb_checkpoints
+*.ckpt*
+to_change.txt
+tf_upgrade.py

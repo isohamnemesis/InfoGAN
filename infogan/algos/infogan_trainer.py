@@ -19,7 +19,7 @@ class InfoGANTrainer(object):
                  checkpoint_dir="ckt",
                  max_epoch=100,
                  updates_per_epoch=100,
-                 snapshot_interval=10000,
+                 snapshot_interval=1000, #initially it was 10000
                  info_reg_coeff=1.0,
                  discriminator_learning_rate=2e-4,
                  generator_learning_rate=2e-4,
@@ -222,42 +222,50 @@ class InfoGANTrainer(object):
             summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
 
             saver = tf.train.Saver()
-
+            saver.restore(sess, "/home/nithin127/infoGAN/ckt/mnist/mnist_2017_03_18_21_27_45/mnist_2017_03_18_21_27_45_5000.ckpt")
+            print("Model restored.\n\n")
             counter = 0
 
             log_vars = [x for _, x in self.log_vars]
             log_keys = [x for x, _ in self.log_vars]
 
-            for epoch in range(self.max_epoch):
-                widgets = ["epoch #%d|" % epoch, Percentage(), Bar(), ETA()]
-                pbar = ProgressBar(maxval=self.updates_per_epoch, widgets=widgets)
-                pbar.start()
+            try:
+                for epoch in range(self.max_epoch):
+                    widgets = ["epoch #%d|" % epoch, Percentage(), Bar(), ETA()]
+                    pbar = ProgressBar(maxval=self.updates_per_epoch, widgets=widgets)
+                    pbar.start()
 
-                all_log_vals = []
-                for i in range(self.updates_per_epoch):
-                    pbar.update(i)
+                    all_log_vals = []
+                    for i in range(self.updates_per_epoch):
+                        pbar.update(i)
+                        x, _ = self.dataset.train.next_batch(self.batch_size)
+                        feed_dict = {self.input_tensor: x}
+                        log_vals = sess.run([self.discriminator_trainer] + log_vars, feed_dict)[1:]
+                        sess.run(self.generator_trainer, feed_dict)
+                        all_log_vals.append(log_vals)
+                        counter += 1
+
+                        if counter % self.snapshot_interval == 0:
+                            snapshot_name = "%s_%s" % (self.exp_name, str(counter))
+                            fn = saver.save(sess, "%s/%s.ckpt" % (self.checkpoint_dir, snapshot_name))
+                            print("Model saved in file: %s\n" % fn)
+
                     x, _ = self.dataset.train.next_batch(self.batch_size)
-                    feed_dict = {self.input_tensor: x}
-                    log_vals = sess.run([self.discriminator_trainer] + log_vars, feed_dict)[1:]
-                    sess.run(self.generator_trainer, feed_dict)
-                    all_log_vals.append(log_vals)
-                    counter += 1
 
-                    if counter % self.snapshot_interval == 0:
-                        snapshot_name = "%s_%s" % (self.exp_name, str(counter))
-                        fn = saver.save(sess, "%s/%s.ckpt" % (self.checkpoint_dir, snapshot_name))
-                        print("Model saved in file: %s" % fn)
+                    summary_str = sess.run(summary_op, {self.input_tensor: x})
+                    summary_writer.add_summary(summary_str, counter)
 
-                x, _ = self.dataset.train.next_batch(self.batch_size)
+                    avg_log_vals = np.mean(np.array(all_log_vals), axis=0)
+                    log_dict = dict(zip(log_keys, avg_log_vals))
 
-                summary_str = sess.run(summary_op, {self.input_tensor: x})
-                summary_writer.add_summary(summary_str, counter)
+                    log_line = "; ".join("%s: %s" % (str(k), str(v)) for k, v in zip(log_keys, avg_log_vals))
+                    print("Epoch %d | " % (epoch) + log_line)
+                    sys.stdout.flush()
+                    if np.any(np.isnan(avg_log_vals)):
+                        raise ValueError("NaN detected!")
 
-                avg_log_vals = np.mean(np.array(all_log_vals), axis=0)
-                log_dict = dict(zip(log_keys, avg_log_vals))
+            except:
+                snapshot_name = "%s_%s" % (self.exp_name, str(counter))
+                fn = saver.save(sess, "%s/%s.ckpt" % (self.checkpoint_dir, snapshot_name))
+                print("Exiting!!\nModel saved in file: %s\n" % fn)
 
-                log_line = "; ".join("%s: %s" % (str(k), str(v)) for k, v in zip(log_keys, avg_log_vals))
-                print("Epoch %d | " % (epoch) + log_line)
-                sys.stdout.flush()
-                if np.any(np.isnan(avg_log_vals)):
-                    raise ValueError("NaN detected!")
